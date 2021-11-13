@@ -7,7 +7,7 @@ Description: Part II of the assignment (https://www.dropbox.com/sh/7ntaqhusvnk00
 
 The script "main.R" will solve the Bellman equation and estimate the nested fixed point estimator. 
 The file "Bellman_functions.R" contains a set of helper function that are called during the estimation.
-it is necessary to create a folder named "Data" in the root directory and place the datasets there. The cvs files can be found here: 
+Before executing the script, it is necessary to create a folder named "Data" in the root directory and place the datasets there. The cvs files can be found here: 
 https://www.dropbox.com/sh/7ntaqhusvnk00u4/AAAFzkD1uaZs6jmKaZDqltQVa?dl=0
 
 
