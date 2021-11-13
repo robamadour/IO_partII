@@ -1,14 +1,16 @@
+#' Solve the Bellman equation
+#' @param coeff The coefficient at which the value function will be estimated
+#' It is assumed that coeff = (theta_X, theta_I,theta_V, theta_F, theta_H) 
+#' @param params A list of estimation parameters
+#' @param V0 An (optional) initial value for the value function
 Bellman <- function(coeff, params,V0){
-  # Calls BellmanParams to create the required matrices for fast computation
-  # of the Bellman equation. Then calls BellmanLoop for the actual fixed point
-  # solution
   
-  # Construct matrices to compute the Bellman equation
+  # Construct matrices and indexes that are necessary for solving the Bellman equation 
   if (!exists("BellmanParams",where = params)){
     params$BellmanParams <- PackBellmanParams(params)
   }
 
-  # Call BellmanLoop
+  # Run the loop to find the fixed point of the Bellman equation
   if(!missing(V0)) {
     return(BellmanLoop(coeff, params,V0))
   }
@@ -18,10 +20,13 @@ Bellman <- function(coeff, params,V0){
   
 }
 
+#' Preliminary computations for solving the Bellman equation. This function
+#' creates matrices and mappings between Omega states and matrix indexes
+#' These matrices (and indeces) allow for faster comptutations in the Bellman loop
+#' @param params A list of estimation parameters
 PackBellmanParams <- function(params){
-  # Create matrices that allow fast computation of the Bellman equation
   
-  # Other parameters
+  # Estimation parameters
   n_omega1 <- params$n_omega1          # number of omega1 states
   N1 <- params$N1                      # number of states for each omega1
   nstates <- n_omega1*N1               # Number of states
@@ -37,44 +42,63 @@ PackBellmanParams <- function(params){
   OldV   <- matrix(0,nstates,1)
   Investprob <- matrix(0,nstates,1)
   
-  # Get ordered values if the state for each index 
+  # The logic of the BellmanLoop function is to work with one-dimensional vectors
+  # representing V and Vtilde. This allows for faster computation. But also requires
+  # defining a mapping from the multidimensional Omega/Omega_tilde states to a 
+  # one-dimensional index. We will use indexes to access V and Vtilde. Transitions from 
+  # Omega to Omega_tilde, and from Omega_tilde to Omega, involve changing particular
+  # states, such as DAV, lag investment, HPV status, etc. In these cases, we 
+  # recover the states from indexes, change the states, and then compute the new 
+  # indexes corresponding to these new states.
+  
+  # Omega (or omega tilde) states are indexed from 1 to nstates
+  index <- c(1:nstates)
+  # Each index corresponds to a unique Omega/Omega_tilde state
   # states are (omega1,lagInv1,lagInv2,orderViol,DAV) for NewV or OldV
   # or         (omega1,lagInv1,currentV,orderViol,DAV) for vtilde
-  index <- c(1:nstates)
+
+  # Here, IndexToValues maps an index to the corresponding 5-dimensional state
   states <- t(sapply(index,IndexToValues)) 
-  # get states when the plant invests (from omegaTilde to omega)
+  
+  # Get updated states when the plant invests (transition from omega_tilde to omega)
   statesI <- states
   statesI[,2] <- 1 # lag1 of investment
   statesI[,3] <- states[,2] # lag2 of investment
-  # get states when the plant does not invest
+  
+  # Get updated states when the plant does not invest
   statesNI <- states
   statesNI[,2] <- 0 # lag1 of investment
   statesNI[,3] <- states[,2] # lag2 of investment
-  # get index when the plant is in compliance
+  
+  # Get updated index when the plant transitions into compliance
   statesComp <- states
   statesComp[,2:4]<-0
   statesComp[,5]<-1
+  # Here, ValuesToIndex maps a 5-dimensional state vector into its corresponding
+  # index
   indexComp <- apply(statesComp,1,ValuesToIndex)
   
   # Get DAV values
-  DAVgrid <- params$DAVgrid
-  DAV <- DAVgrid[states[,5]]
-  npointsDAV  <- length(DAVgrid)
-  maxpointDAV <- DAVgrid[npointsDAV]
-  widthDAV <- DAVgrid[2]-DAVgrid[1]
+  DAVgrid <- params$DAVgrid  # retrieve DAV grid
+  DAV <- DAVgrid[states[,5]] # compute DAV
+  npointsDAV  <- length(DAVgrid) # number of points in the grid
+  maxpointDAV <- DAVgrid[npointsDAV] # maximum DAV value
+  widthDAV <- DAVgrid[2]-DAVgrid[1]  # grid width
   
-  # compute updated DAV
+  # Compute updated DAV after depreciation and current violation
   newDAV <- (1-dep)*DAV + states[,3]
   
-  # Interpolate newDAV using the grid
-  #indexes
+  # Interpolate newDAV using the grid: find interpolation DAVgrid indexes and 
+  # weights
+  
+  # DAVgrid indexes
   i_below <- pmin(1 + floor(newDAV*(npointsDAV-1)/maxpointDAV),npointsDAV)
   i_above <- pmin(2 + floor(newDAV*(npointsDAV-1)/maxpointDAV),npointsDAV)
   # weights
   w_below <- pmax((DAVgrid[i_above]-newDAV)/widthDAV,0)
   w_above <- 1-w_below
   
-  # Solve OldV if investment
+  # Find updated indexes (for DAV above and below) when the plant invests
   statesI_below <- statesI
   statesI_below[,5] <- i_below
   indexI_below <- apply(statesI_below,1,ValuesToIndex)
@@ -82,7 +106,7 @@ PackBellmanParams <- function(params){
   statesI_above[,5] <- i_above
   indexI_above <- apply(statesI_above,1,ValuesToIndex)
   
-  # Solve OldV if no investment
+  # Find updated indexes (for DAV above and below) when the plant does not invest
   statesNI_below <- statesNI
   statesNI_below[,5] <- i_below
   indexNI_below <- apply(statesNI_below,1,ValuesToIndex)
@@ -90,13 +114,16 @@ PackBellmanParams <- function(params){
   statesNI_above[,5] <- i_above
   indexNI_above <- apply(statesNI_above,1,ValuesToIndex)
   
+  # Recover inspections, fines and violations in each regulatory outcome
+  # Also recover probability transitions
   
-  # Compute U, CaseProb and indexes for each case
-  # create lists of names
+  # First, define names of columns for each variable-regulatory outcome case
+  # Initialize as empty lists
   ins_list <- c()
   vio_list <- c()
   fine_list <- c()
   prob_list <- c()
+  # Loop through regulatory outcomes to construct column names
   for (j_ro in 1:n_regoutcomes){
     
     ins_name <- paste0("inspection",j_ro)
@@ -112,7 +139,7 @@ PackBellmanParams <- function(params){
     prob_list <- c(prob_list,prob_name)
   }
   
-  # create j_ro and j_tr indexes
+  # Map (regularotory outcome, transition) pairs into one-dimensional indexes
   jRo <- rep(NA, n_regoutcomes*n_transitions)
   jTr <- rep(NA, n_regoutcomes*n_transitions)
   for (j_ro in 1:n_regoutcomes){
@@ -122,26 +149,26 @@ PackBellmanParams <- function(params){
     }
   }
   
-  # Compute U and CaseProb (probability of each case)
-  
+  # Get inspections, violations, fines, and new HPV status from the data
+  # Here, each "case" is a regulatory outcome - sate transition pair
   insCase  <- params$data[index,ins_list[jRo]]
   vioCase  <- params$data[index,vio_list[jRo]]
   fineCase <- params$data[index,fine_list[jRo]]
   HPVCase  <- matrix(rep(jTr,nstates),nstates,n_regoutcomes*n_transitions,byrow = T)
   HPVCase  <- 1*(HPVCase == 3) 
   
-  # Compute probability of each case
+  # Compute the probability of each case
   prob_ro <- params$data[index,prob_list[jRo]]
   transition_name <- paste0("transition",jTr-1,"_",jRo)
   prob_tr  <- params$data[index,transition_name]
   CaseProb <- prob_ro*prob_tr
   
-  # Reshape as vectors
+  # Reshape as a vector
   CaseProb <- c(as.matrix(CaseProb))
   
-  # compute index for violation cases
+  # Transition from omega to omega_tilde: update violation and HPV status
   indexVioCase <- matrix(rep(index,n_regoutcomes*n_transitions),nstates,n_regoutcomes*n_transitions)
-  # loop through columns (cases) to compute the transition
+  # Loop through columns (cases) to compute the new state and its corresponding index
   for (i in 1:(n_regoutcomes*n_transitions)){
     # get state values
     stateCase <- t(sapply(indexVioCase[,i],IndexToValues))
@@ -152,7 +179,7 @@ PackBellmanParams <- function(params){
     # change HPV status
     stateCase[,4] <- jTr[i]-1
     
-    # recompute the index
+    # Get the index corresponding to the new state
     indexVioCase[,i] <- apply(stateCase,1,ValuesToIndex)
   }
   
@@ -178,8 +205,13 @@ PackBellmanParams <- function(params){
   return(paramsBellman)
 }
 
+#' Solve the Bellman equation
+#' Assumes that BellmanParams are already stored in the params argument
+#' @param coeff The coefficient at which the value function will be estimated
+#' It is assumed that coeff = (theta_X, theta_I,theta_V, theta_F, theta_H) 
+#' @param params A list of estimation parameters
+#' @param V0 An (optional) initial value for the value function
 BellmanLoop <- function(coeff, params,V0){
-  # Estimates the fixed point of the Bellman equation
   
   # Retrieve Bellman parameters
   paramsBellman <- params$BellmanParams
@@ -226,13 +258,12 @@ BellmanLoop <- function(coeff, params,V0){
   U <- c(as.matrix(U))
   
   # Loop until NewV converges to the fixed point
-  
   iconv = 0 # counts the number of iterations
   norm_Vdiff <- 1
   while (norm_Vdiff>=params$tol){
     iconv = iconv + 1
     
-    # 1) Update Vtilde and investment probabilities ############################
+    # 1) Update Vtilde and investment probabilities 
 
     # Solve OldV if investment
     OldV_I <- w_below*OldV[indexI_below] + w_above*OldV[indexI_above]
@@ -247,19 +278,19 @@ BellmanLoop <- function(coeff, params,V0){
     # Update Vtilde
     Vtilde <- (states[,4] == 0)*V_C + (states[,4] > 0)*V_NC # states[,4] -> ordered violator status
   
-    # 2) Update NewV ###########################################################
+    # 2) Update NewV 
     
     VCase <- (U+Vtilde[indexVioCase])*CaseProb
     VCase <- matrix(VCase,nstates,n_regoutcomes*n_transitions)
     NewV <- rowSums(VCase)
     
-    # 3) Calculate norm of diff between OldV and NewV ##########################
+    # 3) Calculate norm of diff between OldV and NewV 
     norm_Vdiff <- max(abs(OldV-NewV))
     OldV <- NewV
     #print(paste0("Iteration # ",iconv,", norm = ",norm_Vdiff))
   }
   
-  # 4) Pack and return main results ############################################
+  # 4) Pack and return main results 
   results <- list()
   
   # Save prob. of investment
@@ -280,8 +311,8 @@ BellmanLoop <- function(coeff, params,V0){
   return(results)
 }
 
+#' Checks the value function with the provided file
 CompareValues <- function(outBellman,file,params){
-  # Function to check value function with provided file
   
   library(ggplot2)
   library(tidyr)
@@ -309,8 +340,8 @@ CompareValues <- function(outBellman,file,params){
   
 }
 
+#' Checks the valueTilde function with the provided file
 CompareVTilde <- function(outBellman,file,params){
-  # Function to check vtilde function with provided file
   
   library(ggplot2)
   library(tidyr)
@@ -347,8 +378,9 @@ CompareVTilde <- function(outBellman,file,params){
   
 }
 
+#' Checks the investment probabilities and likelihoods with the provided file
 CompareProb <- function(LLdata,file){
-  # Function to check investment probabilites and likelihood
+
   library(ggplot2)
   library(tidyr)
   
@@ -384,8 +416,9 @@ CompareProb <- function(LLdata,file){
   return(merged)
 }
 
+#' Recover the likelihood for states with DAV = 2
 Question1C <- function(outBellman,file){
-  # Recover the liklihood for states with DAV = 2
+  
   index <- c(1:length(outBellman$Investprob))
   states <- t(sapply(index,IndexToValues)) 
   dataout <- data.frame(states)
@@ -396,15 +429,19 @@ Question1C <- function(outBellman,file){
   write.csv(dataout,file, row.names = FALSE)
 }
 
+#' Add BellmanParams and LogLikeParams structures to params for faster computations
 AddParams <- function(params){
-  # Add BellmanParams and LogLikeParams for faster computations
   params$BellmanParams <- PackBellmanParams(params)
   params$LogLikeParams <- LogLikeParams(params)
   return(params)
 }
 
+#' Estimates the variance of the ML estimator using the outer product approximation
+#' @param thetaML ML estimator
+#' @param params Estimation parameters
+#' @DeltaTHeta Difference used in numerical approximation of the gradient
+#' @param V0 Initial value for the value function
 EstimateMLVariance <- function(thetaML, params,DeltaTheta,V0){
-  # Estimates the variance of the ML estimator usin the outer product approximation
   
   # Construct matrices to compute the Bellman equation
   if (!exists("BellmanParams",where = params)){
@@ -419,11 +456,12 @@ EstimateMLVariance <- function(thetaML, params,DeltaTheta,V0){
     outML <- BellmanLoop(thetaML, params,V0)
   }
   
+  # Compute the loglikelihood at the ML parameter
   LLOutput <- LogLike(outML,params)
   LLData <- LLOutput$lldata
   LLData$LL_ML <- LLData$l_i  
   
-  # Estimate likelihood at deviations
+  # Estimate likelihood at small deviations
   for (i in 1:length(thetaML)){
     theta_i <- thetaML
     theta_i[i] <- theta_i[i] - DeltaTheta # Delta-deviation
@@ -444,9 +482,12 @@ EstimateMLVariance <- function(thetaML, params,DeltaTheta,V0){
   return(solve(GradProd))
 }
  
+#' Computes the Log likelihood at all observations. 
+#' Also returns investment probabilities
+#' @param BellmanOut Output from Bellman function
+#' @param params Estimation parameters
 LogLike <- function(BellmanOut,params){
-  # Computes the Log likelihood at all observations. Also returns investment
-  # probabilities
+  
   
   if (!exists("LogLikeParams",where = params)){
     params$LogLikeParams <- LogLikeParams(params)
@@ -481,15 +522,13 @@ LogLike <- function(BellmanOut,params){
   return(out)
 }
 
-
+#' Defines matrices and indexes that allow faster repeated computation of the 
+#' log likelihood function
 LogLikeParams <- function(params){
-  # Defines matrices that allow faster repeated computation of the likelihood
   
   DAVgrid <-params$DAVgrid
   data <-params$panel_data
   n_obs <-nrow(data)
-  
-  DAVgrid <- params$DAVgrid
   npointsDAV  <- length(DAVgrid)
   maxpointDAV <- DAVgrid[npointsDAV]
   widthDAV <- DAVgrid[2]-DAVgrid[1]
@@ -533,8 +572,11 @@ LogLikeParams <- function(params){
   return(llparams)
 }
 
+#' Computes the Log likelihood at all observations. 
+#' Faster than Loglike, but does not output investment probabilities
+#' @param BellmanOut Output from Bellman function
+#' @param params Estimation parameters
 LogLike2 <- function(BellmanOut,params){
-  # Faster computation of the total likelihood
 
   i1 <- params$LogLikeParams$i1
   i2 <- params$LogLikeParams$i2
@@ -552,13 +594,15 @@ LogLike2 <- function(BellmanOut,params){
   return(ll)
 }
 
-
+#' Function to be maximized in ML estimation
+#' @param theta Coefficient at which the value function will be found and then
+#' the loglikelihood will be computed
+#' @param params Estimation parameters 
 EvalFunction <- function(theta,params){
-  # Function to be maximized in ML estimation. First computes the solution to the
-  # Bellman equation, then computes the log-likelihood
-  
+
   print(theta)
   
+  # Find the value function
   if (exists("V0")){
     outBellman <- BellmanLoop(theta, params,V0)
   }
@@ -566,12 +610,17 @@ EvalFunction <- function(theta,params){
     outBellman <- BellmanLoop(theta, params)
   }
   assign("V0",outBellman$NewV,envir = .GlobalEnv)
+  
+  # Estimate the log likelihood
   LL <- LogLike2(outBellman,params)
   return(LL)
 }
 
+#' Nested fixed point estimation
+#' @param theta0 Initial value 
+#' @param params Estimation parameters
+#' @param solver Solver choice
 NestedFixedPoint<-function(theta0,params,solver){
-  # Nested fixed point estimation
   
   # Construct matrices to compute the Bellman equation
   if (!exists("BellmanParams",where = params)){
@@ -625,9 +674,9 @@ NestedFixedPoint<-function(theta0,params,solver){
   return(out)
 }
 
+#' Mapping from indexes (of the vector representing the value function) and the
+#' corresponding omega states
 IndexToValues <- function(index){
-  # Function that takes an index of the V matrix and return the corresponding
-  # omega (or omega_tilde) states
   
   N1 <- 161
   N2 <- 80
@@ -647,9 +696,9 @@ IndexToValues <- function(index){
   return(c(omega1,lagi1,lagi2,vio,dav))
 }
 
+#' Mapping from omega states to indexes (of the vector representing the value 
+#' function) 
 ValuesToIndex <- function(x){
-  # Function that takes an omega state and returns its corresponding index in the
-  # V matrix
   
   N1 <- 161
   N2 <- 80
