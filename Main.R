@@ -1,3 +1,10 @@
+# Author: Roberto Zuniga
+# Date: November 12, 2021
+# Description: This script partially replicates Blunder, Gowrisankaran and Blundell
+# (2020). Specifically, It solver the Bellman equation and computes the nested
+# fixed point estimator.
+
+
 # Set working directories
 current_dir <- "./IO_partII"
 setwd(current_dir)
